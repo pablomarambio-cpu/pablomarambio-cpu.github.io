@@ -1,0 +1,835 @@
+import pygame
+import random
+import json
+import os
+import time
+import hashlib
+import secrets
+import string
+
+pygame.init()
+
+ANCHO, ALTO = 1000, 700
+pantalla = pygame.display.set_mode((ANCHO, ALTO))
+pygame.display.set_caption("UMBRA: Rutas del Eco")
+reloj = pygame.time.Clock()
+
+# Colores
+FONDO = (8, 12, 27)
+PANEL = (17, 26, 47)
+PANEL2 = (25, 38, 64)
+CELESTE = (74, 224, 240)
+MORADO = (174, 105, 255)
+BLANCO = (235, 241, 250)
+GRIS = (145, 160, 181)
+VERDE = (100, 235, 165)
+ROJO = (255, 94, 119)
+DORADO = (255, 205, 100)
+
+pequena = pygame.font.SysFont("consolas", 16)
+normal = pygame.font.SysFont("consolas", 22)
+grande = pygame.font.SysFont("consolas", 38, bold=True)
+titulo = pygame.font.SysFont("consolas", 54, bold=True)
+
+# Archivos guardados junto al programa
+USUARIOS_FILE = "umbra_usuarios.json"
+PARTIDAS_FILE = "umbra_partidas.json"
+
+
+def leer_json(ruta):
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def guardar_json(ruta, datos):
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(datos, f, indent=2, ensure_ascii=False)
+
+
+usuarios = leer_json(USUARIOS_FILE)
+partidas = leer_json(PARTIDAS_FILE)
+
+
+def nuevo_progreso(nombre):
+    return {
+        "nombre": nombre,
+        "geo": 0,
+        "nivel": 1,
+        "vidas": 5,
+        "vidas_max": 5,
+        "tiempo": 6.0,
+        "mejor_nivel": 1
+    }
+
+
+def guardar_progreso():
+    if cuenta_actual:
+        partidas[cuenta_actual] = progreso.copy()
+        guardar_json(PARTIDAS_FILE, partidas)
+
+
+def hash_password(password, sal):
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), sal.encode(), 150000
+    ).hex()
+
+
+def registrar(nombre, password):
+    clave = nombre.strip().lower()
+
+    if len(clave) < 3 or len(password) < 4:
+        return False, "Usuario: mínimo 3 caracteres. Clave: mínimo 4."
+
+    if clave in usuarios:
+        return False, "Ese usuario ya existe."
+
+    sal = secrets.token_hex(16)
+    usuarios[clave] = {
+        "nombre": nombre.strip(),
+        "sal": sal,
+        "hash": hash_password(password, sal)
+    }
+
+    guardar_json(USUARIOS_FILE, usuarios)
+    partidas[clave] = nuevo_progreso(nombre.strip())
+    guardar_json(PARTIDAS_FILE, partidas)
+
+    return True, "Cuenta creada. Ahora inicia sesión."
+
+
+def iniciar_sesion(nombre, password):
+    clave = nombre.strip().lower()
+    cuenta = usuarios.get(clave)
+
+    if not cuenta:
+        return False
+
+    return secrets.compare_digest(
+        hash_password(password, cuenta["sal"]),
+        cuenta["hash"]
+    )
+
+
+def dibujar_texto(texto, x, y, fuente=normal, color=BLANCO, centro=False):
+    imagen = fuente.render(str(texto), True, color)
+    rect = imagen.get_rect()
+    if centro:
+        rect.center = (x, y)
+    else:
+        rect.topleft = (x, y)
+    pantalla.blit(imagen, rect)
+
+
+def fondo():
+    pantalla.fill(FONDO)
+
+    for x in range(0, ANCHO, 40):
+        pygame.draw.line(pantalla, (14, 23, 42), (x, 0), (x, ALTO))
+
+    for y in range(0, ALTO, 40):
+        pygame.draw.line(pantalla, (14, 23, 42), (0, y), (ANCHO, y))
+
+    pygame.draw.rect(
+        pantalla, CELESTE, (24, 24, ANCHO - 48, ALTO - 48),
+        1, border_radius=8
+    )
+
+
+def panel(rect, borde=MORADO):
+    pygame.draw.rect(pantalla, PANEL, rect, border_radius=12)
+    pygame.draw.rect(pantalla, borde, rect, 1, border_radius=12)
+
+
+def boton(rect, etiqueta, color=CELESTE, habilitado=True):
+    r = pygame.Rect(rect)
+    encima = r.collidepoint(pygame.mouse.get_pos()) and habilitado
+    relleno = PANEL2 if encima else PANEL
+    borde = color if habilitado else (65, 73, 91)
+
+    pygame.draw.rect(pantalla, relleno, r, border_radius=8)
+    pygame.draw.rect(pantalla, borde, r, 2 if encima else 1, border_radius=8)
+    dibujar_texto(
+        etiqueta, r.centerx, r.centery, pequena,
+        color if habilitado else GRIS, True
+    )
+    return r
+
+
+def cabecera(subtitulo=""):
+    dibujar_texto("UMBRA", 54, 38, titulo, CELESTE)
+    dibujar_texto("RUTAS DEL ECO", 58, 96, pequena, MORADO)
+
+    if subtitulo:
+        dibujar_texto(subtitulo, 500, 100, normal, BLANCO, True)
+
+    if cuenta_actual:
+        dibujar_texto(
+            f"CUENTA: {usuarios[cuenta_actual]['nombre']}",
+            690, 44, pequena, GRIS
+        )
+
+
+def mensaje(texto, color=CELESTE):
+    global aviso, aviso_color, aviso_hasta
+    aviso = texto
+    aviso_color = color
+    aviso_hasta = time.time() + 3
+
+
+def dibujar_aviso():
+    if time.time() < aviso_hasta:
+        pygame.draw.rect(pantalla, PANEL2, (110, 625, 780, 40), border_radius=8)
+        pygame.draw.rect(pantalla, aviso_color, (110, 625, 780, 40), 1, border_radius=8)
+        dibujar_texto(aviso, 500, 645, pequena, aviso_color, True)
+
+
+def campo(rect, etiqueta, valor, activo, oculto=False):
+    pygame.draw.rect(pantalla, PANEL2 if activo else PANEL, rect, border_radius=7)
+    pygame.draw.rect(
+        pantalla, CELESTE if activo else GRIS, rect, 1, border_radius=7
+    )
+    dibujar_texto(etiqueta, rect[0], rect[1] - 24, pequena, GRIS)
+    mostrado = "*" * len(valor) if oculto else valor
+    dibujar_texto(mostrado[-38:], rect[0] + 10, rect[1] + 10, pequena)
+
+
+# Estado general
+cuenta_actual = None
+progreso = nuevo_progreso("Viajero")
+estado = "login"
+
+aviso = ""
+aviso_color = CELESTE
+aviso_hasta = 0
+
+usuario = ""
+password = ""
+campo_activo = "usuario"
+modo_registro = False
+
+nombre_nuevo = ""
+codigo_secreto = ""
+codigo_sala = ""
+
+secuencia = []
+entrada = ""
+inicio_prueba = 0
+tiempo_inicio = 0
+
+# Multijugador local
+jugadores = []
+jugador_actual = 0
+sala = ""
+inicio_multijugador = 0
+secuencia_multi = []
+entrada_multi = ""
+resultado_multi = ""
+
+
+def comenzar_aventura():
+    global estado, secuencia, entrada, inicio_prueba
+
+    secuencia = [
+        random.choice("WASD")
+        for _ in range(min(3 + progreso["nivel"], 12))
+    ]
+    entrada = ""
+    inicio_prueba = time.time()
+    estado = "aventura"
+
+
+def error_aventura():
+    global estado
+
+    progreso["vidas"] -= 1
+
+    if progreso["vidas"] <= 0:
+        progreso["geo"] = 0
+        progreso["nivel"] = 1
+        progreso["vidas"] = progreso["vidas_max"]
+        progreso["tiempo"] = 6.0
+        guardar_progreso()
+        estado = "menu"
+        mensaje("Perdiste todas las máscaras. La aventura se reinició.", ROJO)
+    else:
+        guardar_progreso()
+        comenzar_aventura()
+        mensaje("Fallaste: perdiste una máscara.", ROJO)
+
+
+def acierto_aventura():
+    global estado
+
+    recompensa = 5 + progreso["nivel"] * 2
+    progreso["geo"] += recompensa
+    progreso["nivel"] += 1
+    progreso["mejor_nivel"] = max(
+        progreso["mejor_nivel"], progreso["nivel"]
+    )
+    guardar_progreso()
+    comenzar_aventura()
+    mensaje(f"¡Correcto! Ganaste {recompensa} Geo.", VERDE)
+
+
+def crear_sala():
+    global sala, jugadores, jugador_actual
+    global inicio_multijugador, secuencia_multi, entrada_multi
+    global resultado_multi, estado
+
+    sala = "".join(random.choice(string.ascii_uppercase + string.digits)
+                   for _ in range(6))
+
+    jugadores = [{
+        "nombre": progreso["nombre"],
+        "puntos": 0,
+        "vidas": 5,
+        "secuencia": [random.choice("WASD")]
+    }]
+
+    jugador_actual = 0
+    secuencia_multi = jugadores[0]["secuencia"][:]
+    entrada_multi = ""
+    resultado_multi = ""
+    inicio_multijugador = time.time()
+    estado = "multijugador"
+    mensaje(f"Sala local creada: {sala}", VERDE)
+
+
+def comenzar_siguiente_turno():
+    global jugador_actual, secuencia_multi, entrada_multi
+
+    vivos = [i for i, j in enumerate(jugadores) if j["vidas"] > 0]
+
+    if not vivos:
+        terminar_multijugador()
+        return
+
+    disponibles = [i for i in vivos if i > jugador_actual]
+    jugador_actual = disponibles[0] if disponibles else vivos[0]
+
+    secuencia_multi = jugadores[jugador_actual]["secuencia"][:]
+    entrada_multi = ""
+
+
+def terminar_multijugador():
+    global estado, resultado_multi
+
+    if not jugadores:
+        estado = "menu"
+        return
+
+    mayor = max(j["puntos"] for j in jugadores)
+    ganadores = [j["nombre"] for j in jugadores if j["puntos"] == mayor]
+
+    if len(ganadores) == 1:
+        resultado_multi = f"¡Ganó {ganadores[0]} con {mayor} puntos!"
+    else:
+        resultado_multi = "Empate: " + ", ".join(ganadores)
+
+    estado = "fin_multi"
+
+
+def resolver_turno(correcto):
+    global secuencia_multi, entrada_multi
+
+    jugador = jugadores[jugador_actual]
+
+    if correcto:
+        jugador["puntos"] += 1
+        jugador["secuencia"].append(random.choice("WASD"))
+        entrada_multi = ""
+        secuencia_multi = jugador["secuencia"][:]
+        mensaje(f"{jugador['nombre']} gana un punto.", VERDE)
+    else:
+        jugador["vidas"] -= 1
+        mensaje(f"{jugador['nombre']} perdió una vida.", ROJO)
+        comenzar_siguiente_turno()
+
+
+def dibujar_login():
+    fondo()
+    cabecera("IDENTIDAD DEL VIAJERO")
+    panel((220, 180, 560, 390))
+
+    dibujar_texto(
+        "CREAR CUENTA" if modo_registro else "INICIAR SESIÓN",
+        500, 225, grande, BLANCO, True
+    )
+
+    campo((320, 300, 360, 42), "USUARIO", usuario, campo_activo == "usuario")
+    campo((320, 385, 360, 42), "CONTRASEÑA", password,
+          campo_activo == "password", True)
+
+    boton((320, 460, 170, 46), "REGISTRAR" if modo_registro else "ENTRAR", VERDE)
+    boton((510, 460, 170, 46), "VOLVER" if modo_registro else "CREAR CUENTA", MORADO)
+
+    dibujar_texto("Clic en un campo para escribir.", 500, 540, pequena, GRIS, True)
+    dibujar_texto("El guardado se almacena en este computador.", 500, 565, pequena, GRIS, True)
+
+
+def dibujar_menu():
+    fondo()
+    cabecera("ELIGE TU RUTA")
+
+    dibujar_texto(
+        f"GEO: {progreso['geo']}    NIVEL: {progreso['nivel']}    "
+        f"MÁSCARAS: {progreso['vidas']}/{progreso['vidas_max']}",
+        500, 160, pequena, CELESTE, True
+    )
+
+    panel((240, 185, 520, 420))
+
+    boton((300, 215, 400, 44), "1 / EXPLORAR", CELESTE)
+    boton((300, 268, 400, 44), "2 / MERCADER", DORADO,
+          progreso["nivel"] >= 3)
+    boton((300, 321, 190, 44), "3 / CONTROLES", MORADO)
+    boton((510, 321, 190, 44), "4 / NOMBRE", MORADO)
+    boton((300, 374, 190, 44), "5 / CÓDIGOS", DORADO)
+    boton((510, 374, 190, 44), "6 / SALIR", ROJO)
+    boton((300, 427, 400, 44), "7 / MULTIJUGADOR LOCAL", MORADO)
+    boton((300, 480, 400, 44), "8 / CERRAR SESIÓN", GRIS)
+
+    dibujar_texto("La tienda se desbloquea en el nivel 3.", 500, 560, pequena, GRIS, True)
+
+
+def dibujar_aventura():
+    fondo()
+    cabecera("PRUEBA DEL ECO")
+    panel((150, 195, 700, 365), CELESTE)
+
+    restante = max(0, progreso["tiempo"] - (time.time() - inicio_prueba))
+
+    dibujar_texto("Memoriza y repite usando W, A, S y D.", 500, 250, normal, BLANCO, True)
+    dibujar_texto(" ".join(secuencia), 500, 335, grande, MORADO, True)
+    dibujar_texto(f"ENTRADA: {entrada or '—'}", 500, 405, normal, CELESTE, True)
+    dibujar_texto(f"TIEMPO: {restante:.1f}s", 500, 460, normal,
+                  VERDE if restante > 2 else ROJO, True)
+
+    boton((360, 505, 280, 40), "VOLVER AL MENÚ", ROJO)
+
+    if restante <= 0:
+        error_aventura()
+
+
+def dibujar_tienda():
+    fondo()
+    cabecera("MERCADER DE LOS ECOS")
+    panel((180, 200, 640, 360), DORADO)
+
+    dibujar_texto(f"Geo disponible: {progreso['geo']}", 500, 255, normal, DORADO, True)
+    boton((250, 310, 500, 50), "COMPRAR +0.5s DE TIEMPO / 25 GEO", CELESTE)
+    boton((250, 375, 500, 50), "COMPRAR +1 MÁSCARA MÁXIMA / 40 GEO", MORADO)
+    boton((370, 460, 260, 44), "VOLVER", ROJO)
+
+
+def dibujar_controles():
+    fondo()
+    cabecera("CONTROLES")
+    panel((160, 200, 680, 350), MORADO)
+
+    lineas = [
+        "W = ARRIBA        A = IZQUIERDA",
+        "S = ABAJO         D = DERECHA",
+        "Repite la secuencia exacta antes de que termine el tiempo.",
+        "Cada acierto entrega Geo y sube tu nivel.",
+        "Cada error te quita una máscara.",
+        "Si pierdes todas las máscaras, reinicias la aventura."
+    ]
+
+    for i, linea in enumerate(lineas):
+        dibujar_texto(linea, 500, 260 + i * 38, pequena, BLANCO, True)
+
+    boton((370, 485, 260, 44), "VOLVER", CELESTE)
+
+
+def dibujar_nombre():
+    fondo()
+    cabecera("NOMBRE DEL VIAJERO")
+    panel((220, 220, 560, 280), MORADO)
+
+    campo((300, 320, 400, 45), "NUEVO NOMBRE", nombre_nuevo, True)
+    boton((300, 400, 185, 46), "GUARDAR", VERDE)
+    boton((515, 400, 185, 46), "CANCELAR", ROJO)
+
+
+def dibujar_codigos():
+    fondo()
+    cabecera("CÓDIGOS SECRETOS")
+    panel((220, 220, 560, 280), DORADO)
+
+    campo((300, 310, 400, 45), "CÓDIGO", codigo_secreto, True)
+    dibujar_texto("Los códigos secretos entregan Geo.", 500, 380, pequena, GRIS, True)
+    boton((300, 420, 185, 44), "ACTIVAR", DORADO)
+    boton((515, 420, 185, 44), "VOLVER", CELESTE)
+
+
+def dibujar_multijugador():
+    fondo()
+    cabecera("MULTIJUGADOR LOCAL")
+    panel((150, 170, 700, 430), MORADO)
+
+    dibujar_texto(f"SALA: {sala}", 500, 215, grande, CELESTE, True)
+    dibujar_texto("Comparte el teclado y juega por turnos.", 500, 265, pequena, GRIS, True)
+
+    boton((250, 305, 230, 46), "AGREGAR JUGADOR", VERDE,
+          len(jugadores) < 4)
+    boton((520, 305, 230, 46), "EMPEZAR PARTIDA", CELESTE,
+          len(jugadores) >= 2)
+
+    for i, jugador in enumerate(jugadores):
+        dibujar_texto(
+            f"{i + 1}. {jugador['nombre']}  |  Vidas: {jugador['vidas']}  |  "
+            f"Puntos: {jugador['puntos']}",
+            500, 385 + i * 35, pequena, BLANCO, True
+        )
+
+    boton((370, 535, 260, 42), "VOLVER AL MENÚ", ROJO)
+
+
+def dibujar_juego_multi():
+    fondo()
+    cabecera("DUELO DE ECOS")
+    panel((140, 180, 720, 420), MORADO)
+
+    tiempo = max(0, 60 - (time.time() - inicio_multijugador))
+    jugador = jugadores[jugador_actual]
+
+    dibujar_texto(f"SALA: {sala}", 500, 215, pequena, CELESTE, True)
+    dibujar_texto(f"TIEMPO: {int(tiempo)}s", 500, 250, normal,
+                  VERDE if tiempo > 10 else ROJO, True)
+    dibujar_texto(f"TURNO DE: {jugador['nombre']}", 500, 300, normal, BLANCO, True)
+    dibujar_texto(" ".join(secuencia_multi), 500, 365, grande, MORADO, True)
+    dibujar_texto(f"ENTRADA: {entrada_multi or '—'}", 500, 425, normal, CELESTE, True)
+    dibujar_texto(f"VIDAS: {jugador['vidas']}   PUNTOS: {jugador['puntos']}",
+                  500, 470, normal, BLANCO, True)
+    dibujar_texto("Usa W, A, S y D para repetir la secuencia.", 500, 525, pequena, GRIS, True)
+
+    if tiempo <= 0 or all(j["vidas"] <= 0 for j in jugadores):
+        terminar_multijugador()
+
+
+def dibujar_fin_multi():
+    fondo()
+    cabecera("FIN DE LA PARTIDA")
+    panel((180, 210, 640, 330), MORADO)
+
+    dibujar_texto(resultado_multi, 500, 290, normal, VERDE, True)
+
+    orden = sorted(jugadores, key=lambda j: j["puntos"], reverse=True)
+    for i, jugador in enumerate(orden):
+        dibujar_texto(
+            f"{i + 1}. {jugador['nombre']} — {jugador['puntos']} puntos",
+            500, 350 + i * 35, pequena, BLANCO, True
+        )
+
+    boton((370, 475, 260, 44), "VOLVER AL MENÚ", CELESTE)
+
+
+def click(pos):
+    global estado, modo_registro, cuenta_actual, progreso
+    global usuario, password, campo_activo, nombre_nuevo
+    global codigo_secreto, codigo_sala, jugadores, jugador_actual
+    global secuencia_multi, entrada_multi, inicio_multijugador
+
+    x, y = pos
+
+    if estado == "login":
+        if pygame.Rect(320, 300, 360, 42).collidepoint(pos):
+            campo_activo = "usuario"
+        elif pygame.Rect(320, 385, 360, 42).collidepoint(pos):
+            campo_activo = "password"
+        elif pygame.Rect(320, 460, 170, 46).collidepoint(pos):
+            if modo_registro:
+                ok, msg = registrar(usuario, password)
+                mensaje(msg, VERDE if ok else ROJO)
+                if ok:
+                    modo_registro = False
+                    password = ""
+            else:
+                if iniciar_sesion(usuario, password):
+                    cuenta_actual = usuario.strip().lower()
+                    progreso = partidas.get(
+                        cuenta_actual,
+                        nuevo_progreso(usuarios[cuenta_actual]["nombre"])
+                    ).copy()
+                    estado = "menu"
+                    password = ""
+                    mensaje("Sesión iniciada. Progreso cargado.", VERDE)
+                else:
+                    mensaje("Usuario o contraseña incorrectos.", ROJO)
+        elif pygame.Rect(510, 460, 170, 46).collidepoint(pos):
+            modo_registro = not modo_registro
+            password = ""
+        return
+
+    if estado == "menu":
+        if pygame.Rect(300, 215, 400, 44).collidepoint(pos):
+            comenzar_aventura()
+        elif pygame.Rect(300, 268, 400, 44).collidepoint(pos):
+            if progreso["nivel"] >= 3:
+                estado = "tienda"
+            else:
+                mensaje("Desbloquea la tienda en el nivel 3.", DORADO)
+        elif pygame.Rect(300, 321, 190, 44).collidepoint(pos):
+            estado = "controles"
+        elif pygame.Rect(510, 321, 190, 44).collidepoint(pos):
+            nombre_nuevo = progreso["nombre"]
+            estado = "nombre"
+        elif pygame.Rect(300, 374, 190, 44).collidepoint(pos):
+            codigo_secreto = ""
+            estado = "codigos"
+        elif pygame.Rect(510, 374, 190, 44).collidepoint(pos):
+            pygame.event.post(pygame.event.Event(pygame.QUIT))
+        elif pygame.Rect(300, 427, 400, 44).collidepoint(pos):
+            estado = "sala"
+            codigo_sala = ""
+        elif pygame.Rect(300, 480, 400, 44).collidepoint(pos):
+            guardar_progreso()
+            cuenta_actual = None
+            usuario = ""
+            password = ""
+            estado = "login"
+        return
+
+    if estado == "aventura":
+        if pygame.Rect(360, 505, 280, 40).collidepoint(pos):
+            guardar_progreso()
+            estado = "menu"
+        return
+
+    if estado == "tienda":
+        if pygame.Rect(250, 310, 500, 50).collidepoint(pos):
+            if progreso["geo"] >= 25:
+                progreso["geo"] -= 25
+                progreso["tiempo"] = min(12, progreso["tiempo"] + 0.5)
+                guardar_progreso()
+                mensaje("Mejora de tiempo comprada.", VERDE)
+            else:
+                mensaje("No tienes suficiente Geo.", ROJO)
+        elif pygame.Rect(250, 375, 500, 50).collidepoint(pos):
+            if progreso["geo"] >= 40 and progreso["vidas_max"] < 10:
+                progreso["geo"] -= 40
+                progreso["vidas_max"] += 1
+                progreso["vidas"] += 1
+                guardar_progreso()
+                mensaje("Máscara máxima mejorada.", VERDE)
+            else:
+                mensaje("Falta Geo o ya tienes 10 máscaras.", ROJO)
+        elif pygame.Rect(370, 460, 260, 44).collidepoint(pos):
+            estado = "menu"
+        return
+
+    if estado == "controles":
+        if pygame.Rect(370, 485, 260, 44).collidepoint(pos):
+            estado = "menu"
+        return
+
+    if estado == "nombre":
+        if pygame.Rect(300, 320, 400, 45).collidepoint(pos):
+            campo_activo = "nombre"
+        elif pygame.Rect(300, 400, 185, 46).collidepoint(pos):
+            if nombre_nuevo.strip():
+                progreso["nombre"] = nombre_nuevo.strip()[:24]
+                guardar_progreso()
+                estado = "menu"
+                mensaje("Nombre guardado.", VERDE)
+        elif pygame.Rect(515, 400, 185, 46).collidepoint(pos):
+            estado = "menu"
+        return
+
+    if estado == "codigos":
+        if pygame.Rect(300, 310, 400, 45).collidepoint(pos):
+            campo_activo = "codigo"
+        elif pygame.Rect(300, 420, 185, 44).collidepoint(pos):
+            premios = {
+                "larva": 25,
+                "adminpablo": 500,
+                "oli marambio": 75,
+                "fer": 50,
+                "seba": 50,
+                "benja": 50,
+                "brunito": 100
+            }
+            codigo = codigo_secreto.strip().lower()
+            if codigo in premios:
+                progreso["geo"] += premios[codigo]
+                guardar_progreso()
+                mensaje(f"¡Código activado! +{premios[codigo]} Geo.", VERDE)
+            else:
+                mensaje("Código desconocido.", ROJO)
+        elif pygame.Rect(515, 420, 185, 44).collidepoint(pos):
+            estado = "menu"
+        return
+
+    if estado == "sala":
+        if pygame.Rect(270, 305, 230, 46).collidepoint(pos):
+            if len(jugadores) >= 4:
+                mensaje("Máximo 4 jugadores.", ROJO)
+            else:
+                numero = len(jugadores) + 1
+                jugadores.append({
+                    "nombre": f"Viajero {numero}",
+                    "puntos": 0,
+                    "vidas": 5,
+                    "secuencia": [random.choice("WASD")]
+                })
+                mensaje(f"Jugador {numero} agregado.", VERDE)
+        elif pygame.Rect(520, 305, 230, 46).collidepoint(pos):
+            if len(jugadores) < 2:
+                mensaje("Agrega al menos 2 jugadores.", ROJO)
+            else:
+                jugador_actual = 0
+                for j in jugadores:
+                    j["puntos"] = 0
+                    j["vidas"] = 5
+                    j["secuencia"] = [random.choice("WASD")]
+                secuencia_multi = jugadores[0]["secuencia"][:]
+                entrada_multi = ""
+                inicio_multijugador = time.time()
+                estado = "juego_multi"
+        elif pygame.Rect(370, 535, 260, 42).collidepoint(pos):
+            estado = "menu"
+        return
+
+    if estado == "juego_multi":
+        return
+
+    if estado == "fin_multi":
+        if pygame.Rect(370, 475, 260, 44).collidepoint(pos):
+            estado = "menu"
+
+
+def escribir(evento):
+    global usuario, password, campo_activo
+    global nombre_nuevo, codigo_secreto, codigo_sala
+    global entrada, entrada_multi
+
+    if evento.key == pygame.K_ESCAPE:
+        if estado not in ("login", "menu"):
+            if estado in ("juego_multi", "fin_multi"):
+                estado = "menu"
+            else:
+                estado = "menu"
+        return
+
+    if estado == "login":
+        if evento.key == pygame.K_TAB:
+            campo_activo = "password" if campo_activo == "usuario" else "usuario"
+        elif evento.key == pygame.K_BACKSPACE:
+            if campo_activo == "usuario":
+                usuario = usuario[:-1]
+            else:
+                password = password[:-1]
+        elif evento.unicode and evento.unicode.isprintable():
+            if campo_activo == "usuario" and len(usuario) < 28:
+                usuario += evento.unicode
+            elif campo_activo == "password" and len(password) < 64:
+                password += evento.unicode
+        return
+
+    if estado == "aventura":
+        tecla = pygame.key.name(evento.key).upper()
+        if tecla in "WASD" and len(tecla) == 1:
+            entrada += tecla
+            if entrada != "".join(secuencia[:len(entrada)]):
+                error_aventura()
+            elif len(entrada) == len(secuencia):
+                acierto_aventura()
+        return
+
+    if estado == "juego_multi":
+        tecla = pygame.key.name(evento.key).upper()
+
+        if tecla in "WASD" and len(tecla) == 1:
+            entrada_multi += tecla
+            correcta = "".join(secuencia_multi[:len(entrada_multi)])
+
+            if entrada_multi != correcta:
+                resolver_turno(False)
+            elif len(entrada_multi) == len(secuencia_multi):
+                resolver_turno(True)
+        return
+
+    if estado == "nombre":
+        if evento.key == pygame.K_BACKSPACE:
+            nombre_nuevo = nombre_nuevo[:-1]
+        elif evento.unicode and evento.unicode.isprintable() and len(nombre_nuevo) < 24:
+            nombre_nuevo += evento.unicode
+        return
+
+    if estado == "codigos":
+        if evento.key == pygame.K_BACKSPACE:
+            codigo_secreto = codigo_secreto[:-1]
+        elif evento.unicode and evento.unicode.isprintable() and len(codigo_secreto) < 32:
+            codigo_secreto += evento.unicode
+        return
+
+    if estado == "sala":
+        if evento.key == pygame.K_BACKSPACE:
+            codigo_sala = codigo_sala[:-1]
+        elif evento.unicode and evento.unicode.isalnum() and len(codigo_sala) < 6:
+            codigo_sala += evento.unicode.upper()
+
+
+# Bucle principal
+ejecutando = True
+
+while ejecutando:
+    reloj.tick(60)
+
+    for evento in pygame.event.get():
+        if evento.type == pygame.QUIT:
+            guardar_progreso()
+            ejecutando = False
+
+        elif evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+            if estado == "sala" and pygame.Rect(250, 250, 500, 40).collidepoint(evento.pos):
+                campo_activo = "sala"
+            click(evento.pos)
+
+        elif evento.type == pygame.KEYDOWN:
+            escribir(evento)
+
+    if estado == "login":
+        dibujar_login()
+    elif estado == "menu":
+        dibujar_menu()
+    elif estado == "aventura":
+        dibujar_aventura()
+    elif estado == "tienda":
+        dibujar_tienda()
+    elif estado == "controles":
+        dibujar_controles()
+    elif estado == "nombre":
+        dibujar_nombre()
+    elif estado == "codigos":
+        dibujar_codigos()
+    elif estado == "sala":
+        fondo()
+        cabecera("CREAR PARTIDA LOCAL")
+        panel((150, 170, 700, 430), MORADO)
+        dibujar_texto("Multijugador por turnos · 2 a 4 jugadores", 500, 225, normal, BLANCO, True)
+        campo((250, 250, 500, 40), "CÓDIGO DE SALA (IDENTIFICADOR LOCAL)", codigo_sala, campo_activo == "sala")
+        boton((270, 305, 230, 46), "AGREGAR JUGADOR", VERDE, len(jugadores) < 4)
+        boton((520, 305, 230, 46), "EMPEZAR PARTIDA", CELESTE, len(jugadores) >= 2)
+
+        for i, jugador in enumerate(jugadores):
+            dibujar_texto(
+                f"{i+1}. {jugador['nombre']}",
+                500, 385 + i * 32, pequena, BLANCO, True
+            )
+
+        boton((370, 535, 260, 42), "VOLVER AL MENÚ", ROJO)
+    elif estado == "juego_multi":
+        dibujar_juego_multi()
+    elif estado == "fin_multi":
+        dibujar_fin_multi()
+
+    dibujar_aviso()
+    pygame.display.flip()
+
+guardar_progreso()
+pygame.quit()
